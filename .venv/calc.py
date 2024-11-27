@@ -9,8 +9,9 @@ class CalcButton(ft.ElevatedButton):
         self.expand = expand
         self.on_click = button_clicked
         self.data = text
-        self.width = 100
-        self.height = 100
+        self.width = 50
+        self.height = 50
+       
 
 
 class DigitButton(CalcButton):
