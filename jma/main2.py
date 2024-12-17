@@ -1,115 +1,73 @@
 import sqlite3
 import requests
+import json
+from datetime import datetime
 
-# データベース接続
-def create_db():
-    conn = sqlite3.connect('weather_forecast.db')
+# API URL設定（気象庁のエリアコードを利用）
+AREA_CODE = "130000"  # 例：東京都
+API_URL = "https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
+
+# SQLiteデータベース設定
+DB_NAME = "weather.db"
+
+# データベース初期化
+def init_db():
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # テーブル作成（Areas、Weather）
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS Areas (
-        area_code TEXT PRIMARY KEY,
-        area_name TEXT
-    );
-    ''')
+    # エリア情報テーブル
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Area (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        area_name TEXT UNIQUE NOT NULL,
+                        area_code TEXT UNIQUE NOT NULL)''')
 
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS Weather (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        area_code TEXT,
-        date TEXT,
-        weather TEXT,
-        wind TEXT,
-        temperature REAL,
-        FOREIGN KEY (area_code) REFERENCES Areas (area_code)
-    );
-    ''')
-
-    # コミットしてDBに反映
+    # 天気情報テーブル
+    cursor.execute('''CREATE TABLE IF NOT EXISTS WeatherData (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        area_id INTEGER,
+                        date TEXT NOT NULL,
+                        temperature REAL,
+                        humidity INTEGER,
+                        weather TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (area_id) REFERENCES Area(id))''')
     conn.commit()
-    return conn, cursor
-
-
-# エリア情報をAPIから取得し、DBに格納
-def insert_area_data(cursor):
-    area_url = "http://www.jma.go.jp/bosai/common/const/area.json"
-    response = requests.get(area_url)
-
-    if response.status_code == 200:
-        area_data = response.json()
-        for area in area_data:
-            area_code = area['code']
-            area_name = area['name']
-            cursor.execute("INSERT OR REPLACE INTO Areas (area_code, area_name) VALUES (?, ?)", (area_code, area_name))
-    else:
-        print("エリア情報の取得に失敗しました")
-
-
-# 天気予報データをAPIから取得してDBに格納
-def insert_weather_data(cursor, area_code):
-    url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
-    response = requests.get(url)
-
-    if response.status_code == 200:
-        forecast_data = response.json()
-
-        # エリア情報を格納
-        area_name = forecast_data[0]["timeSeries"][0]["areas"][0]["area"]["name"]
-        cursor.execute("INSERT OR REPLACE INTO Areas (area_code, area_name) VALUES (?, ?)", (area_code, area_name))
-
-        # 天気予報情報を格納
-        for time_series in forecast_data[0]["timeSeries"]:
-            for area in time_series["areas"]:
-                weather = area["weathers"]
-                wind = area["winds"]
-                temperature = area.get("temps", [None])[0]  # 気温データがない場合もあるので安全に取得
-
-                # 日付を取得（今回は単純に最初の日時を使用）
-                date = time_series["timeDefines"][0]
-
-                # Weatherテーブルにデータを格納
-                cursor.execute("INSERT INTO Weather (area_code, date, weather, wind, temperature) VALUES (?, ?, ?, ?, ?)", 
-                               (area_code, date, ",".join(weather), ",".join(wind), temperature))
-    else:
-        print(f"天気予報データの取得に失敗しました: {area_code}")
-
-
-# 過去の天気予報を取得
-def get_weather_for_date(cursor, area_code, date):
-    cursor.execute("""
-        SELECT * FROM Weather 
-        WHERE area_code = ? AND date = ?
-    """, (area_code, date))
-
-    weather_data = cursor.fetchall()
-    if weather_data:
-        for record in weather_data:
-            print(f"エリアコード: {record[1]}, 日付: {record[2]}, 天気: {record[3]}, 風: {record[4]}, 気温: {record[5]}")
-    else:
-        print("指定された日付の天気情報はありません")
-
-
-def main():
-    # データベース作成
-    conn, cursor = create_db()
-
-    # エリア情報の挿入
-    insert_area_data(cursor)
-
-    # 例: 東京都のエリアコード（130000）の天気予報を取得
-    area_code = "130000"
-    insert_weather_data(cursor, area_code)
-
-    # データベース接続をコミットして閉じる
-    conn.commit()
-
-    # 過去の天気予報を表示（例: 2024-12-04T12:00:00+09:00）
-    get_weather_for_date(cursor, area_code, "2024-12-04T12:00:00+09:00")
-
-    # 最後にデータベース接続を閉じる
     conn.close()
 
+# APIからデータ取得
+def fetch_weather_data():
+    response = requests.get(API_URL)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        print("API取得失敗")
+        return None
+
+# データをDBに格納
+def save_to_db(data):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    # エリア情報の挿入
+    cursor.execute("INSERT OR IGNORE INTO Area (area_name, area_code) VALUES (?, ?)", 
+                   ("東京", AREA_CODE))
+    cursor.execute("SELECT id FROM Area WHERE area_code = ?", (AREA_CODE,))
+    area_id = cursor.fetchone()[0]
+
+    # JSONデータから必要情報を取り出す
+    for day in data[0]["timeSeries"][0]["timeDefines"]:
+        weather = data[0]["timeSeries"][0]["areas"][0]["weathers"]
+        date = day.split("T")[0]  # 日付フォーマット調整
+
+        cursor.execute("INSERT INTO WeatherData (area_id, date, weather) VALUES (?, ?, ?)",
+                       (area_id, date, weather))
+    
+    conn.commit()
+    conn.close()
 
 if __name__ == "__main__":
-    main()
+    init_db()
+    weather_data = fetch_weather_data()
+    if weather_data:
+        save_to_db(weather_data)
+    print("データが正常にDBへ格納されました！")
